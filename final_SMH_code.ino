@@ -9,7 +9,16 @@
 const char* ssid       = "NETGEAR53";
 const char* password   = "excitedmint952";
 const char* ntpServer  = "pool.ntp.org";
-const char* time_zone  = "EST5EDT,M3.2.0,M11.1.0"; // US Eastern Time
+
+// HARDCODED TIMEZONE OFFSET (East Coast US is -4 hours from UTC)
+// -4 hours * 60 minutes * 60 seconds = -14400
+const long utcOffsetInSeconds = -14400; 
+
+// --- HARDCODED OFFLINE START TIME ---
+// If Wi-Fi fails, the clock will start ticking from this EXACT time.
+// Use 24-hour format (e.g., 14 for 2:00 PM, 0 for Midnight)
+int offlineStartHour = 12;  
+int offlineStartMinute = 0; 
 
 // --- HARDWARE PINS (ESP32-C3 Super Mini) ---
 #define DHTPIN 2
@@ -29,9 +38,9 @@ DHT dht(DHTPIN, DHTTYPE);
 void setup() {
   Serial.begin(115200);
   
-  // 1. Initialize Relay (ACTIVE-LOW LOGIC)
+  // 1. Initialize Relay (ACTIVE-HIGH LOGIC)
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH); // Sending HIGH turns an active-low relay OFF
+  digitalWrite(RELAY_PIN, LOW); // LOW = OFF
   
   // 2. Initialize Sensors & I2C
   dht.begin();
@@ -39,85 +48,95 @@ void setup() {
   
   // 3. Boot the OLED Screen
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("OLED allocation failed! Check wiring."));
-    for(;;); // Halt the system if screen fails
+    Serial.println(F("OLED allocation failed!"));
+    for(;;); 
   }
   
-  // Show boot sequence on screen
+  // 4. 3-Second Mister Test
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
+  display.setCursor(0, 0);
   display.println("Booting System...");
+  display.println("Testing Mister...");
   display.display();
+  
+  digitalWrite(RELAY_PIN, HIGH); // Turn ON mister
+  delay(3000);                   // Hold for 3 seconds
+  digitalWrite(RELAY_PIN, LOW);  // Turn OFF mister
 
-  // 4. Connect to Wi-Fi (WITH TIMEOUT PROTECTION)
-  WiFi.mode(WIFI_STA); // Force Station mode to prevent AP conflicts
+  // 5. Connect to Wi-Fi with Loading Animation
+  WiFi.mode(WIFI_STA); 
   WiFi.begin(ssid, password);
+  
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-    delay(500);
-    display.print(".");
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) { // 10 second timeout
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.print("Connecting WiFi\n");
+    
+    // Animate the dots: 1, 2, 3, then reset
+    int dots = (attempts % 4); 
+    if (dots == 1) display.print(".");
+    else if (dots == 2) display.print("..");
+    else if (dots == 3) display.print("...");
+    
     display.display();
+    delay(500);
     attempts++;
-    if(attempts % 10 == 0){
-       display.println(); // Drop to a new line if it takes a while
-    }
   }
   
+  // 6. Show Connection Status
   display.clearDisplay();
   display.setCursor(0,0);
   if (WiFi.status() == WL_CONNECTED) {
     display.println("WiFi Connected!");
-  } else {
-    display.println("WiFi Failed! Offline.");
-  }
-  display.display();
-
-  // 5. Sync Atomic Time (ONLY IF CONNECTED)
-  if (WiFi.status() == WL_CONNECTED) {
-    configTzTime(time_zone, ntpServer);
-    display.println("Syncing clock...");
     display.display();
+    
+    // Sync Atomic Time using hard mathematical offset
+    configTime(utcOffsetInSeconds, 0, ntpServer);
     
     struct tm timeinfo;
     int timeAttempts = 0;
     while(!getLocalTime(&timeinfo) && timeAttempts < 10){
-      delay(1000); // Wait until time is retrieved
+      delay(500); 
       timeAttempts++;
     }
+  } else {
+    display.println("WiFi Failed!");
+    display.println("Using Hardcoded Time.");
+    display.display();
+    
+    // Force the internal clock to the hardcoded time you set at the top
+    // We add 1704067200 (Jan 1, 2024 in seconds) so the ESP32 doesn't reject it as a "1970 error"
+    struct timeval tv;
+    tv.tv_sec = 1704067200 + (offlineStartHour * 3600) + (offlineStartMinute * 60);
+    tv.tv_usec = 0;
+    settimeofday(&tv, NULL);
   }
   
-  delay(2000); // Let the user read the status screen
+  delay(3000); // Wait 3 seconds so you can read the status
 }
 
 void loop() {
-  delay(2000); // Sensor hardware limits to 1 read every 2 seconds
+  delay(2000); 
   
-  // Fetch current time safely (50ms timeout so it doesn't freeze)
+  // Fetch current time
   struct tm timeinfo;
   bool hasTime = getLocalTime(&timeinfo, 50);
-  int currentHour = hasTime ? timeinfo.tm_hour : -1;
+  int currentHour = hasTime ? timeinfo.tm_hour : 0; 
   
   // Fetch climate data
   float humidity = dht.readHumidity();
   float tempF = dht.readTemperature(true);
   
-  // Error handling
-  if (isnan(humidity) || isnan(tempF)) {
-    Serial.println("DHT Sensor Error");
-    return;
-  }
+  if (isnan(humidity) || isnan(tempF)) return;
   
-  // --- AUTOMATION LOGIC (Custom Schedule) ---
-  float targetHumidity = 50.0; // Default fallback
+  // --- AUTOMATION LOGIC (Crested Gecko Schedule) ---
+  float targetHumidity = 50.0; 
   
-  if (!hasTime) {
-    // OFFLINE FALLBACK: If router dies, safely hold 50% 24/7
-    targetHumidity = 50.0; 
-  }
   // 8:00 AM to 7:59 PM (Daytime) -> 50%
-  else if (currentHour >= 8 && currentHour < 20) {
+  if (currentHour >= 8 && currentHour < 20) {
     targetHumidity = 50.0;
   } 
   // 8:00 PM to 8:59 PM (Evening Spike) -> 90%
@@ -129,44 +148,37 @@ void loop() {
     targetHumidity = 65.0;
   }
   
-  // --- RELAY CONTROL (Active-Low Fix) ---
+  // --- RELAY CONTROL (Active-High) ---
   bool isMisterOn = false;
   
   if (humidity < targetHumidity) {
-    digitalWrite(RELAY_PIN, LOW); // LOW turns the relay ON
+    digitalWrite(RELAY_PIN, HIGH); // ON
     isMisterOn = true;
   } 
-  else if (humidity >= (targetHumidity + 5.0)) { // 5% deadband to stop rapid clicking
-    digitalWrite(RELAY_PIN, HIGH); // HIGH turns the relay OFF
+  else if (humidity >= (targetHumidity + 5.0)) {
+    digitalWrite(RELAY_PIN, LOW); // OFF
     isMisterOn = false;
   } 
   else {
-    // If hovering in the deadband gap, check the actual pin state to maintain current status
-    isMisterOn = (digitalRead(RELAY_PIN) == LOW); 
+    isMisterOn = (digitalRead(RELAY_PIN) == HIGH); 
   }
   
   // --- DRAW THE OLED DASHBOARD ---
   display.clearDisplay();
   
+  // 1. Current Time (Top Left)
+  display.setTextSize(1);
+  display.setCursor(0, 0);
   if (hasTime) {
-    // Format the clock for 12-hour AM/PM
     int displayHour = timeinfo.tm_hour % 12;
-    if (displayHour == 0) displayHour = 12; // Midnight and Noon should be 12, not 0
+    if (displayHour == 0) displayHour = 12; 
     String ampm = (timeinfo.tm_hour >= 12) ? "PM" : "AM";
-    
-    // 1. Current Time (Top Left)
-    display.setTextSize(1);
-    display.setCursor(0, 0);
     display.printf("%02d:%02d %s", displayHour, timeinfo.tm_min, ampm.c_str());
   } else {
-    // Show Offline Status if internet is down
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("OFFLINE");
+    display.print("CLOCK ERROR");
   }
   
   // 2. Mist Maker Status (Top Right)
-  display.setTextSize(1);
   display.setCursor(76, 0);
   if(isMisterOn) {
     display.print("MIST: ON");
@@ -177,16 +189,18 @@ void loop() {
   // Draw a horizontal line under the header
   display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
   
-  // 3. Live Humidity (Center Large)
+  // 3. Live Temp (Left) & Humidity (Right) - Size 2
   display.setTextSize(2);
   display.setCursor(0, 20);
-  display.printf("Hum: %.1f%%", humidity);
+  display.printf("%.0fF", tempF);
   
-  // 4. Live Temp & Current Target (Bottom Row)
+  display.setCursor(70, 20);
+  display.printf("%.0f%%", humidity);
+  
+  // 4. Target Humidity (Spanning Bottom)
   display.setTextSize(1);
-  display.setCursor(0, 50);
-  display.printf("T:%.1fF | Tgt:%.0f%%", tempF, targetHumidity);
+  display.setCursor(0, 52);
+  display.printf("TARGET HUMIDITY: %.0f%%", targetHumidity);
   
-  // Push the drawing buffer to the physical screen
   display.display(); 
 }
