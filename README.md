@@ -1,3 +1,5 @@
+this project is called SMH "Self Humidifing Hydrometer" 
+
 echo "# proj1_auto_humidifer" >> README.md
 git init
 git add README.md
