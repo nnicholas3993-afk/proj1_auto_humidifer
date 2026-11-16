@@ -1,0 +1,169 @@
+#include "time.h"
+#include <sys/time.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "DHT.h"
+
+// ==========================================
+// --- SET THE CURRENT TIME HERE ---
+// Type in the time right before you upload or plug it in.
+// Use 24-hour format (e.g., 14 for 2:00 PM)
+int startHour = 12;   
+int startMinute = 0;  
+// ==========================================
+
+// --- HARDWARE PINS (ESP32-C3 Super Mini) ---
+#define DHTPIN 2
+#define DHTTYPE DHT22
+#define RELAY_PIN 3    // Connect Relay IN to GPIO 3 (Active-High)
+#define I2C_SDA 6      // Connect OLED SDA to GPIO 6
+#define I2C_SCL 7      // Connect OLED SCL to GPIO 7
+
+// --- OLED SETUP ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 1. Initialize Relay (ACTIVE-HIGH LOGIC)
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // LOW ensures it starts OFF
+  
+  // 2. Initialize Sensors & I2C
+  dht.begin();
+  Wire.begin(I2C_SDA, I2C_SCL); 
+  
+  // 3. Boot the OLED Screen
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("OLED allocation failed!"));
+    for(;;); 
+  }
+  
+  // 4. Show Boot Screen & Test Mister
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.println("Booting System...");
+  display.println("Testing Mister...");
+  display.display();
+  
+  // 3-Second Mister Prime Test
+  digitalWrite(RELAY_PIN, HIGH);
+  delay(3000);
+  digitalWrite(RELAY_PIN, LOW);
+
+  // 5. Hardcode the Offline Clock
+  struct tm timeinfo;
+  timeinfo.tm_year = 2026 - 1900; // Set to a valid year to bypass clock errors
+  timeinfo.tm_mon = 0;            // January
+  timeinfo.tm_mday = 1;           // 1st
+  timeinfo.tm_hour = startHour;
+  timeinfo.tm_min = startMinute;
+  timeinfo.tm_sec = 0;
+  time_t t = mktime(&timeinfo);
+  
+  struct timeval now = { .tv_sec = t };
+  settimeofday(&now, NULL); // Inject time into the ESP32's internal brain
+  
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.println("System Ready!");
+  display.display();
+  delay(1000); 
+}
+
+void loop() {
+  delay(2000); // Sensor hardware limits to 1 read every 2 seconds
+  
+  // Fetch current time
+  struct tm timeinfo;
+  getLocalTime(&timeinfo);
+  int currentHour = timeinfo.tm_hour;
+  
+  // Fetch climate data
+  float humidity = dht.readHumidity();
+  float tempF = dht.readTemperature(true);
+  
+  if (isnan(humidity) || isnan(tempF)) {
+    Serial.println("DHT Sensor Error");
+    return;
+  }
+  
+  // --- AUTOMATION LOGIC (Crested Gecko Schedule) ---
+  float targetHumidity = 50.0; // Default daytime fallback
+  
+  // 8:00 AM to 7:59 PM (Daytime Dry-Out) -> 50%
+  if (currentHour >= 8 && currentHour < 20) {
+    targetHumidity = 50.0;
+  } 
+  // 8:00 PM to 8:59 PM (Evening Twilight Spike) -> 90%
+  else if (currentHour == 20) {
+    targetHumidity = 90.0;
+  } 
+  // 9:00 PM to 7:59 AM (Nighttime Balance) -> 65%
+  else if (currentHour >= 21 || currentHour < 8) {
+    targetHumidity = 65.0;
+  }
+  
+  // --- RELAY CONTROL (Active-High) ---
+  bool isMisterOn = false;
+  
+  if (humidity < targetHumidity) {
+    digitalWrite(RELAY_PIN, HIGH); // Turn mister ON
+    isMisterOn = true;
+  } 
+  else if (humidity >= (targetHumidity + 5.0)) { // 5% deadband
+    digitalWrite(RELAY_PIN, LOW); // Turn mister OFF
+    isMisterOn = false;
+  } 
+  else {
+    // If hovering in the deadband, maintain current state
+    isMisterOn = (digitalRead(RELAY_PIN) == HIGH); 
+  }
+  
+  // --- DRAW THE OLED DASHBOARD ---
+  display.clearDisplay();
+  
+  // Format the clock for 12-hour AM/PM
+  int displayHour = timeinfo.tm_hour % 12;
+  if (displayHour == 0) displayHour = 12; 
+  String ampm = (timeinfo.tm_hour >= 12) ? "PM" : "AM";
+  
+  // 1. Current Time (Top Left)
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.printf("%02d:%02d %s", displayHour, timeinfo.tm_min, ampm.c_str());
+  
+  // 2. Mist Maker Status (Top Right)
+  display.setCursor(76, 0);
+  if(isMisterOn) {
+    display.print("MIST: ON");
+  } else {
+    display.print("MIST: OFF");
+  }
+
+  // Horizontal divider
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+  
+  // 3. Live Temp & Humidity (Center Row)
+  display.setTextSize(2);
+  display.setCursor(0, 20);
+  display.printf("%.0fF", tempF); // Temp on Left
+  display.setCursor(70, 20);
+  display.printf("%.0f%%", humidity); // Hum on Right
+  
+  // 4. Current Target (Bottom Row)
+  display.setTextSize(1);
+  display.setCursor(0, 50);
+  display.printf("Target Humidity: %.0f%%", targetHumidity);
+  
+  // Push drawing to screen
+  display.display(); 
+}
