@@ -1,1 +1,2 @@
 This is my up to date CAD files for the project. Recommended to resin the inside so the water resevior doesn't leak out and onto the enclosure. the hole on the side is there on purpose and its to have a plunger or plug. the wire of diffuser goes in there.
+(November 2026)
