@@ -2,7 +2,7 @@
 
 An automated, ESP32-powered climate control system designed to maintain the perfect daily humidity cycle for a Crested Gecko. 
 
-This system monitors live temperature and humidity, displays the data on an OLED dashboard, and automatically triggers a misting system based on a hardcoded daily schedule. If the Wi-Fi connection drops, the system gracefully falls back to an internal hardware clock to ensure the misting schedule never misses a beat.
+This system monitors live temperature and humidity, displays the data on an OLED dashboard, and automatically triggers a misting system based on a hardcoded daily schedule. If the Wi-Fi connection drops (hard coded so it doesn't matter), the system gracefully falls back to an internal hardware clock to ensure the misting schedule never misses a beat.
 
 ## Features
 * **Automated Daily Cycle:** 
